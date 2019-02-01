@@ -19,8 +19,8 @@
 
 NTL_CLIENT
 
-FHESecKey* dbgKey = 0;
-EncryptedArray* dbgEa = 0;
+const FHESecKey* dbgKey = 0;
+const EncryptedArray* dbgEa = 0;
 NTL::ZZX dbg_ptxt;
 NTL::Vec<NTL::ZZ> ptxt_pwr; // powerful basis
 

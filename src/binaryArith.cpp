@@ -24,6 +24,7 @@
 
 #include <NTL/BasicThreadPool.h>
 #include "binaryArith.h"
+#include "binaryCompare.h"
 
 #define BPL_ESTIMATE (30)
 // FIXME: this should really be dynamic
@@ -32,7 +33,16 @@ NTL_CLIENT
 
 #ifdef DEBUG_PRINTOUT
 #include "debugging.h"
+long dbg_total_slots = -1;
+void decryptAndSum(ostream &s, const CtPtrMat &numbers, bool negative);
 
+void printBinaryNums(const CtPtrs &eNums, const FHESecKey &sKey, const EncryptedArray &ea, bool negative ,
+                     long slots_per_set_to_print, long slots_per_set);
+
+void printBinaryNums(const CtPtrs &eNums, const FHESecKey &sKey, const EncryptedArray &ea, bool negative,
+                     long slots_per_set_to_print) {
+    printBinaryNums(eNums,sKey,ea,negative,slots_per_set_to_print,dbg_total_slots);
+}
 void decryptAndSum(ostream& s, const CtPtrMat& numbers, bool negative=false);
 #endif
 
@@ -443,6 +453,13 @@ void addTwoNumbers(CtPtrs& sum, const CtPtrs& a, const CtPtrs& b,
   if (lsize(a)<1)      { vecCopy(sum,b,sizeLimit); return; }
   else if (lsize(b)<1) { vecCopy(sum,a,sizeLimit); return; }
 
+#ifdef  DEBUG_PRINTOUT //print inputs
+    vector<long> slots;
+    decryptBinaryNums(slots, a, *dbgKey, *dbgEa, true);
+    cout << "a:" << slots << endl;
+    decryptBinaryNums(slots, b, *dbgKey, *dbgEa, true);
+    cout << "b:" << slots << endl;
+#endif
   // Work out the order of multiplications to compute all the carry bits
   AddDAG addPlan(a,b);
 
@@ -460,6 +477,10 @@ void addTwoNumbers(CtPtrs& sum, const CtPtrs& a, const CtPtrs& b,
     }
   }
   addPlan.apply(sum, a, b, sizeLimit);    // perform the actual addition
+#ifdef  DEBUG_PRINTOUT //print result
+    decryptBinaryNums(slots, sum, *dbgKey, *dbgEa, true);
+    cout << "Result of addition:" << slots << endl;
+#endif
 }
 
 // Return pointers to the three inputs, ordered by size
@@ -980,6 +1001,455 @@ long fifteenOrLess4Four(const CtPtrs& out, const CtPtrs& in, long sizeLimit)
   return numNonNull;
 }
 
+/********************************************************************/
+/***************** Additions to Binary Arith ************************/
+
+//// Rotate all non-null elements of number
+//void rotate(std::vector<Ctxt> &number, long k) {
+//    if (!number.empty()) {
+//        const EncryptedArray &ea = *(number[0].getContext().ea);
+//        for (long j = 0; j < number.size(); ++j) {
+//            ea.rotate(number[j], k);
+//        }
+//    }
+//}
+
+void rotate(CtPtrs &number, long k) {
+    /// Non-null pointer to one of the Ctxt representing an input bit
+    const Ctxt *ct_ptr = number.ptr2nonNull();
+
+    // If all inputs are null, do nothing
+    if (ct_ptr != nullptr) {
+        const EncryptedArray &ea = *(ct_ptr->getContext().ea);
+        for (long j = 0; j < number.size(); ++j) {
+            if (number[j] != nullptr) {
+                ea.rotate(*number[j], k);
+            }
+        }
+    }
+}
+
+// Takes three integers a,b,c,d (CtPtrs) and recursively performs three-4-two among the slots
+void internalThree4Two(CtPtrs &a, CtPtrs &b, CtPtrs &c, CtPtrs &d, long interval, long total_active_slots) {
+
+#ifdef DEBUG_PRINTOUT
+        cout << "Recursion called with interval: " << interval << ", \na: ";
+    printBinaryNums(a, *dbgKey, *dbgEa, false, interval);
+        cout << ", \nb: ";
+    printBinaryNums(b, *dbgKey, *dbgEa, false, interval);
+        cout << ", \nc: ";
+    printBinaryNums(c, *dbgKey, *dbgEa, false, interval);
+        cout << ", \nd: ";
+    printBinaryNums(d, *dbgKey, *dbgEa, false, interval);
+        cout << endl;
+#endif
+
+    /// Non-null pointer to one of the Ctxt representing an input bit
+    const Ctxt *ct_ptr = a.ptr2nonNull();
+    const EncryptedArray &ea = *(ct_ptr->getContext().ea);
+
+    // first add a,b,c to get x,y
+    std::vector<Ctxt> x1_t, y1_t;
+    CtPtrs_vectorCt x1(x1_t), y1(y1_t);
+    three4Two(x1, y1, a, b, c, 0);
+
+#ifdef DEBUG_PRINTOUT
+        cout << "Result of first 3-4-2 is x1:";
+    printBinaryNums(x1, *dbgKey, *dbgEa, false, interval);
+        cout << " and y1: ";
+    printBinaryNums(y1, *dbgKey, *dbgEa, false, interval);
+        cout << endl;
+#endif
+
+    // then add x,y,d to get x2,y2
+    std::vector<Ctxt> x2_t, y2_t;
+    CtPtrs_vectorCt x2(x2_t), y2(y2_t);
+    three4Two(x2, y2, x1, y1, d, 0);
+
+#ifdef DEBUG_PRINTOUT
+        cout << "Result of second 3-4-2 is x2:";
+    printBinaryNums(x2, *dbgKey, *dbgEa, false, interval);
+        cout << " and y2: ";
+    printBinaryNums(y2, *dbgKey, *dbgEa, false, interval);
+        cout << endl;
+#endif
+
+
+    if (interval > 1) {
+        // shift each of them down by half to get another four numbers
+        long s = interval + (interval % 2);
+        std::vector<Ctxt> x2rot_t(x2.size(), Ctxt(ZeroCtxtLike, *ct_ptr));
+        std::vector<Ctxt> y2rot_t(y2.size(), Ctxt(ZeroCtxtLike, *ct_ptr));
+        for (int i = 0; i < x2.size(); ++i) {
+            x2rot_t[i] = *x2[i];
+        }
+        for (int i = 0; i < y2.size(); ++i) {
+            y2rot_t[i] = *y2[i];
+        }
+        CtPtrs_vectorCt x2rot(x2rot_t), y2rot(y2rot_t);
+        rotate(x2rot, -s / 2);
+        rotate(y2rot, -s / 2);
+
+        if (interval % 2 != 0) {
+#ifdef DEBUG_PRINTOUT
+            cout << "not an even number of slots: using mask";
+#endif
+            // we rotated some "garbage" down, too: clear it
+            vector<long> mask_v(ea.size());
+            for(int i = 0; i < ea.size(); ++i) {
+                if (i % total_active_slots < s/2 -1) {
+                    mask_v[i]=1;
+                }
+            }
+#ifdef DEBUG_PRINTOUT
+            cout << mask_v << endl;
+#endif
+           // std::fill_n(mask_v.begin(), s/2-1, 1);
+            ZZX mask;
+
+            ea.encode(mask, mask_v);
+            for (int i = 0; i < x2rot.size(); ++i) {
+                x2rot[i]->multByConstant(mask);
+            }
+            for (int i = 0; i < y2rot.size(); ++i) {
+                y2rot[i]->multByConstant(mask);
+            }
+        }
+
+#ifdef DEBUG_PRINTOUT
+            cout << "Preparing for next round of recursion with x2: ";
+        printBinaryNums(x2, *dbgKey, *dbgEa, false, s / 2);
+            cout << ", y2: ";
+        printBinaryNums(y2, *dbgKey, *dbgEa, false, s / 2);
+            cout << ", x2rot:";
+        printBinaryNums(x2rot, *dbgKey, *dbgEa, false, s / 2);
+            cout << ", yr2rot: ";
+        printBinaryNums(y2rot, *dbgKey, *dbgEa, false, s / 2);
+            cout << endl;
+#endif
+
+        // => recurse
+
+        internalThree4Two(x2, y2, x2rot, y2rot, s / 2, total_active_slots);
+
+
+#ifdef DEBUG_PRINTOUT
+            cout << "Recursion returned xx: ";
+        printBinaryNums(x2, *dbgKey, *dbgEa, false, s / 2);
+            cout << ", yy: ";
+        printBinaryNums(y2, *dbgKey, *dbgEa, false, s / 2);
+            cout << endl;
+#endif
+    }
+
+    // Return result
+    a.resize(x2.size());
+    b.resize(y2.size());
+    for (int i = 0; i < x2.size(); ++i) {
+        *a[i] = *x2[i];
+    }
+    for (int i = 0; i < y2.size(); ++i) {
+        *b[i] = *y2[i];
+    }
+}
+
+
+void internalAdd(CtPtrs &sum, const CtPtrs &number, long interval_not_needed, long in_interval, vector<zzX> *unpackSlotEncoding) {
+    // Because we do this across all slots, the length of the blocks doesn't really matter.
+    // If we have 10 blocks or 1, we still need to shift only based on in_interval
+#ifdef DEBUG_PRINTOUT
+    dbg_total_slots = in_interval;
+#endif
+    /// Non-null pointer to one of the Ctxt representing an input bit
+    const Ctxt *ct_ptr = number.ptr2nonNull();
+
+    // If all inputs are null, do nothing
+    if (ct_ptr == nullptr) {
+        setLengthZero(sum);
+        return;
+    }
+
+    const EncryptedArray &ea = *(ct_ptr->getContext().ea);
+    bool bootstrappable = ct_ptr->getPubKey().isBootstrappable();
+
+    if (in_interval <= 1) {
+        // no slots to sum up
+        vecCopy(sum, number);
+        return;
+    } else if (in_interval == 2) {
+        // Do direct addition
+        vector<Ctxt> a, b;
+        vecCopy(a, number);
+        vecCopy(b, number);
+        CtPtrs_vectorCt aa(a), bb(b);
+        rotate(bb, -1);
+#ifdef DEBUG_PRINTOUT
+            cout << "Adding a: ";
+        printBinaryNums(aa, *dbgKey, *dbgEa, false, 1);
+            cout << " and b: ";
+        printBinaryNums(bb, *dbgKey, *dbgEa, false, 1);
+            cout <<  " directly.";
+#endif
+        addTwoNumbers(sum, aa, bb, 0, unpackSlotEncoding);
+        return;
+    } else if (in_interval == 3) {
+        // Directly apply one step of three4two
+        vector<Ctxt> b, c, x, y;
+        vecCopy(b, number);
+        vecCopy(c, number);
+        CtPtrs_vectorCt bb(b), cc(c), xx(x), yy(y);
+        rotate(bb, -1);
+        rotate(cc, -2);
+#ifdef DEBUG_PRINTOUT
+            cout << "Doing a single round of  3-4-2 with \na: ";
+        printBinaryNums(number, *dbgKey, *dbgEa, false, in_interval);
+            cout << ", \nb: ";
+        printBinaryNums(bb, *dbgKey, *dbgEa, false, in_interval);
+            cout << ", \nc:";
+        printBinaryNums(cc, *dbgKey, *dbgEa, false, in_interval);
+            cout << endl;
+#endif
+        three4Two(xx, yy, number, bb, cc, 0);
+#ifdef DEBUG_PRINTOUT
+            cout << "Result of 3-4-2 is \nx:";
+        printBinaryNums(xx, *dbgKey, *dbgEa, false, 1);
+            cout <<  " and \ny: ";
+        printBinaryNums(yy, *dbgKey, *dbgEa, false, 1);
+            cout << endl;
+#endif
+
+        //now add them
+        addTwoNumbers(sum, xx, yy, 0, unpackSlotEncoding);
+        return;
+    } else {
+#ifdef DEBUG_PRINTOUT
+            cout << "active_slots: " << in_interval << endl;
+#endif
+        // There are two ways: Either have a pool of items,
+        // with level and active slots, and then take them out and do 3-4-2 with that
+        // Alternatively, we could use recursion => easier, so we'll do that
+
+//        if (bootstrappable) {
+//            // Check that we can actually do the next few steps
+//            if (findMinLevel(number) < 5) {
+//                assert(bootstrappable && unpackSlotEncoding != nullptr);
+//                packedRecrypt(number, *unpackSlotEncoding, ea, /*belowLvl=*/10);
+//            }
+//        }
+
+
+        // Create 4 rotated vectors that have active_slots = ea.size()/4
+        std::vector<Ctxt> a, b, c, d;
+        // Copy, in case inputs are aliasing each other
+        vecCopy(a, number);
+        vecCopy(b, number);
+        vecCopy(c, number);
+        vecCopy(d, number);
+        CtPtrs_vectorCt aa(a), bb(b), cc(c), dd(d);
+
+        long s = ((in_interval + 3) / 4) * 4;
+#ifdef DEBUG_PRINTOUT
+            cout << "s:" << s << endl;
+#endif
+        rotate(bb, -s / 4);
+        rotate(cc, -s / 2);
+        rotate(dd, -3 * (s / 4));
+
+        if (in_interval == 5) {
+            // special case, because c also needs masking!
+#ifdef DEBUG_PRINTOUT
+                cout << "applying special masking for 5" << endl;
+#endif
+            // For the last one, we rotated some "garbage" down, too: clear it
+            vector<long> mask_v(ea.size());
+            for(int i = 0; i < ea.size(); ++i) {
+                if (i % in_interval == 0) {
+                    mask_v[i]=1;
+                }
+            }
+#ifdef DEBUG_PRINTOUT
+            cout << "using mask: " << mask_v << endl;
+#endif
+            ZZX mask;
+            ea.encode(mask, mask_v);
+            for (int i = 0; i < cc.size(); ++i) {
+                cc[i]->multByConstant(mask);
+            }
+            // finally, dd should be just zeros
+            for (int i = 0; i < dd.size(); ++i) {
+                dd[i]->DummyEncrypt(ZZX(0));
+            }
+        } else if (in_interval % 4 != 0) {
+#ifdef DEBUG_PRINTOUT
+                cout << "applying masking" << endl;
+#endif
+            // For the last one, we rotated some "garbage" down, too: clear it
+            vector<long> mask_v(ea.size());
+            for(int i = 0; i < ea.size(); ++i) {
+                if (i % in_interval < in_interval - 3*(s/4)) {
+#ifdef DEBUG_PRINTOUT
+                    cout << "setting " << i  << " = 1 << in mask" << endl;
+#endif
+                    mask_v[i]=1;
+                }
+            }
+#ifdef DEBUG_PRINTOUT
+            cout << "using mask: " << mask_v << endl;
+#endif
+            ZZX mask;
+            ea.encode(mask, mask_v);
+            for (int i = 0; i < dd.size(); ++i) {
+                dd[i]->multByConstant(mask);
+            }
+        }
+
+
+#ifdef DEBUG_PRINTOUT
+            cout << "Starting recursion with \na: ";
+        printBinaryNums(aa, *dbgKey, *dbgEa, false, s / 4);
+            cout << ", \nb: ";
+        printBinaryNums(bb, *dbgKey, *dbgEa, false, s / 4);
+            cout << ", \nc: ";
+        printBinaryNums(cc, *dbgKey, *dbgEa, false, s / 4);
+            cout << ", \nd: ";
+        printBinaryNums(dd, *dbgKey, *dbgEa, false, s / 4);
+            cout << endl;
+#endif
+
+        // Now call Three4Two which will recurse until only two numbers are left
+        internalThree4Two(aa, bb, cc, dd, s / 4, in_interval);
+
+
+#ifdef DEBUG_PRINTOUT
+            cout << "Recursion concluded with a: ";
+        printBinaryNums(aa, *dbgKey, *dbgEa, false, s / 4);
+            cout << ", b: ";
+        printBinaryNums(bb, *dbgKey, *dbgEa, false, s / 4);
+            cout << endl;
+#endif
+
+        // Final addition
+        addTwoNumbers(sum, aa, bb, 0, unpackSlotEncoding);
+
+#ifdef DEBUG_PRINTOUT
+        cout << "internal sum is: ";
+        printBinaryNums(sum,*dbgKey,*dbgEa,false,1,in_interval);
+        cout << endl;
+#endif
+    }
+
+}
+
+void internalMinHelper(CtPtrs &values, CtPtrs &indices, long interval, long in_interval, long sets,
+                       vector<zzX> *unpackSlotEncoding) {
+
+    /// Non-null pointer to one of the Ctxt representing an input bit
+    const Ctxt *ct_ptr = values.ptr2nonNull();
+
+    // If all inputs are null, do nothing
+    if (ct_ptr == nullptr || sets == 1) {
+        return;
+    }
+
+    const EncryptedArray &ea = *(ct_ptr->getContext().ea);
+
+
+    // fairly simple setup: Rotate down by half
+    // if it wasn't an even number, zero out "dirty" slots
+    // then do a compare, keep the minimum, calculate new indices as index_a*mu + index_b*ni
+    // then recurse!
+
+    // Make copies that we can shift down
+    std::vector<Ctxt> values_copy(values.size(), Ctxt(ZeroCtxtLike, *ct_ptr));
+    std::vector<Ctxt> indices_copy(indices.size(), Ctxt(ZeroCtxtLike, *ct_ptr));
+    for (int i = 0; i < values.size(); ++i) {
+        if (values[i] != nullptr)
+            values_copy[i] = *values[i];
+    }
+    for (int i = 0; i < indices.size(); ++i) {
+        if (indices[i] != nullptr)
+            indices_copy[i] = *indices[i];
+    }
+    CtPtrs_vectorCt values_copy_ctptrs(values_copy), indices_copy_ctptrs(indices_copy);
+
+    // Get shift amount
+    long k = -(sets / 2) * interval;
+    rotate(values_copy_ctptrs, k);
+    rotate(indices_copy_ctptrs, k);
+    if ( sets % 2 != 0) {
+        // we need to set all slots above sets/2 * interval to zero?
+        vector<long> mask_v(ea.size(),1);
+        mask_v[((sets/2)+1)*interval] = 0;
+        ZZX mask;
+        ea.encode(mask,mask_v);
+        for(int i = 0; i < indices_copy_ctptrs.size(); ++i) {
+            if (indices_copy_ctptrs[i] != nullptr) {
+                indices_copy_ctptrs[i]->multByConstant(mask);
+            }
+        }
+    }
+
+    // Compare the values to get which one was smaller
+    std::vector<Ctxt> max, min;
+    CtPtrs_vectorCt mmax(max), mmin(min);
+    Ctxt mu(ZeroCtxtLike, *ct_ptr), ni(ZeroCtxtLike, *ct_ptr);
+    compareTwoNumbers(mmax, mmin, mu, ni, values, values_copy_ctptrs, unpackSlotEncoding);
+
+    // Now we need to update the indices
+    // indice *ni (a was smaller) + indices_copy * (1+n) (b was smaller or equal)
+    // Not-ni
+    vector<long> ones(ea.size(), 1);
+    ZZX ones_zzx;
+    ea.encode(ones_zzx, ones);
+    Ctxt not_ni = ni;
+    not_ni.addConstant(ones_zzx);
+    // There really should be no difference in size and nullness of entries for those two
+    for (int i = 0; i < indices.size(); ++i) {
+        if (indices[i] != nullptr) {
+            indices[i]->multiplyBy(ni);
+            indices_copy_ctptrs[i]->multiplyBy(not_ni);
+            *(indices[i]) += *(indices_copy_ctptrs[i]);
+        }
+    }
+
+    // now we can recurse!
+    internalMinHelper(mmin, indices, interval, in_interval, sets / 2, unpackSlotEncoding);
+
+    // Done, let's return the value we got from recursion
+    values.resize(mmin.size()); //should do nothing, but let's be safe
+    for (int i = 0; i < mmin.size(); ++i) {
+        *values[i] = *mmin[i];
+    }
+
+}
+
+
+
+void internalMin(CtPtrs &values, CtPtrs &indices, long interval, long in_interval, long sets, vector<zzX> *unpackSlotEncoding) {
+
+    /// Non-null pointer to one of the Ctxt representing an input bit
+    const Ctxt *ct_ptr = values.ptr2nonNull();
+
+    // If all inputs are null, do nothing
+    if (ct_ptr == nullptr) {
+        return;
+    }
+
+#ifdef DEBUG_PRINTOUT
+    cout << "looking for minimum in: \n";
+    printBinaryNums(values,*dbgKey,*dbgEa,true,1);
+    cout << "\n with interval " << interval << " and indices: \n";
+    printBinaryNums(indices,*dbgKey,*dbgEa,true,1);
+    cout << endl;
+#endif
+
+    const EncryptedArray &ea = *(ct_ptr->getContext().ea);
+    internalMinHelper(values, indices, interval, in_interval, sets, unpackSlotEncoding);
+
+
+
+
+}
 
 /********************************************************************/
 /***************** test/debugging functions *************************/
@@ -1076,6 +1546,33 @@ void decryptAndSum(ostream& s, const CtPtrMat& numbers, bool negative)
     sum += slots[0];
   }
   s << ")="<<sum<<endl;
+}
+
+void printBinaryNums(const CtPtrs &eNums, const FHESecKey &sKey, const EncryptedArray &ea, bool negative, long slots_per_set_to_print,
+                     long slots_per_set) {
+    if (slots_per_set_to_print == -1) {
+        slots_per_set_to_print = ea.size();
+    }
+    if (slots_per_set == -1) {
+        slots_per_set = ea.size();
+    }
+    if (slots_per_set_to_print > slots_per_set) {
+        slots_per_set_to_print = slots_per_set;
+    }
+
+    long sets = ea.size() / slots_per_set;
+
+    vector<long> pNums;
+    decryptBinaryNums(pNums,eNums,sKey,ea,negative,true);
+
+    for(int s = 0; s < sets; ++s ) {
+
+        cout << "[" << pNums[s*slots_per_set];
+        for (int i = 1; i < slots_per_set_to_print; ++i) {
+            cout << " ," << pNums[s*slots_per_set+i];
+        }
+        cout << "]";
+    }
 }
 
 #endif // ifdef DEBUG_PRINTOUT

@@ -17,6 +17,7 @@
  **/
 #include "EncryptedArray.h"
 #include "CtPtrs.h" //  defines CtPtrs, CtPtrMat
+#include <vector>
 
 //! Add two integers (i.e. two array of bits) a, b.
 void
@@ -55,4 +56,11 @@ void decryptBinaryNums(std::vector<long>& pNums, const CtPtrs& eNums,
 void packedRecrypt(const CtPtrs& a, const CtPtrs& b,
                    std::vector<zzX>* unpackSlotEncoding);
 
+//! Use rotations and 3-2 trick to add numbers in different slots.
+//! Adds slots [0,active_slots), [active_slots,2*active_slots), etc
+void internalAdd(CtPtrs &sum, const CtPtrs &number, long interval, long in_interval, std::vector<zzX> *unpackSlotEncoding);
+
+//! Minimum. Takes two inputs: One a list of values, the other a list of indices (or other associated data)
+//! Will return the minimum of values in slot 0 of values, and the corresponding element of indices there, also slot 0
+void internalMin(CtPtrs &values, CtPtrs &indices, long interval, long in_interval, long sets, std::vector<zzX> *unpackSlotEncoding = nullptr);
 #endif // ifndef _BINARY_ARITH_H_

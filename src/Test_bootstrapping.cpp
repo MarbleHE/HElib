@@ -32,7 +32,7 @@ static bool debug = 0;   // a debug flag
 static int scale = 0;
 
 
-extern FHESecKey* dbgKey;
+extern const FHESecKey* dbgKey;
 
 // #define DEBUG_PRINTOUT
 #include "debugging.h"

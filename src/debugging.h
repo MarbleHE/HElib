@@ -31,8 +31,8 @@ class EncryptedArray;
 class PlaintextArray;
 class DoubleCRT;
 
-extern FHESecKey* dbgKey;
-extern EncryptedArray* dbgEa;
+extern const FHESecKey* dbgKey;
+extern const EncryptedArray* dbgEa;
 extern NTL::ZZX dbg_ptxt;
 extern NTL::Vec<NTL::ZZ> ptxt_pwr; // powerful basis
 

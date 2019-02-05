@@ -1,5 +1,6 @@
 file(GLOB HELIB_SRC_FILES RELATIVE "${PROJECT_SOURCE_DIR}/src" "*.cpp")
 file(GLOB HELIB_HDR_FILES RELATIVE "${PROJECT_SOURCE_DIR}/src" "*.h")
+file(GLOB TEST_FILES RELATIVE "${PROJECT_SOURCE_DIR}/src" "${PROJECT_SOURCE_DIR}/src" "Test_*.cpp")
 
 ## Remove test files from the source file list.
 foreach(prg ${TEST_FILES})
@@ -23,7 +24,11 @@ endif(BUILD_AES)
 
 if (ENABLE_TEST)
     foreach(TEST_FILE ${TEST_FILES})
-        add_executable(${TEST_FILE}_exe ${TEST_FILE})
-        target_link_libraries(${TEST_FILE}_exe ${RUN_LIB})
+        STRING(REGEX REPLACE ".cpp$" ".o" TARGET_NAME ${TEST_FILE})
+        add_executable(${TARGET_NAME} ${TEST_FILE})
+        target_link_libraries(${TARGET_NAME} ${RUN_LIB})
+        if (ENABLE_DEBUG)
+            target_compile_definitions(${TARGET_NAME} PRIVATE DEBUG_PRINTOUT=1)
+        endif(ENABLE_DEBUG)
     endforeach(TEST_FILE)
 endif(ENABLE_TEST)
